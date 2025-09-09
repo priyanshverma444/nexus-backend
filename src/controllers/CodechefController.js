@@ -7,6 +7,8 @@ const Codechef = require("../models/contestModels/codechefModel");
 const User = require("../models/userModel");
 const { get } = require("mongoose");
 const codechefWinnersModel = require("../models/contestModels/codechefWinnersModel");
+const codechefWinnersArchiveModel = require("../models/contestModels/codechefWinnersArchiveModel");
+const archiveAndDeleteContest = require("../utils/archiveContest");
 const backendUrl = process.env.BACKEND_URI;
 
 // Helper function for delay between requests
@@ -322,68 +324,50 @@ const updateAllCodechefProfiles = async (req, res) => {
 // @access public
 const generateWinners = async (req, res) => {
   const apiKey = req.headers.authorization;
-  if (apiKey !== `Bearer ${process.env.API_KEY}`) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
+  if (apiKey !== `Bearer ${process.env.API_KEY}`) return res.status(401).json({ error: "Unauthorized" });
 
   try {
     const searchQuery = req.params.contestName;
 
-    const partialMatchParticipants = await Codechef.find({
+    const participants = await Codechef.find({
       contestName: { $regex: new RegExp(searchQuery, "i") },
       success: true,
-    })
-      .select("_id contestName stars contestGlobalRank contestRatingDiff")
-      .populate("user_id", "username libId branch section codechefId rollNo userImage yearOfStudy");
+    }).populate("user_id", "username libId branch section codechefId rollNo userImage yearOfStudy");
 
-    const exactMatchParticipants = await Codechef.find({
-      contestName: searchQuery,
-      success: true,
-    }).select("-_id user_id");
-
-    const allParticipantsSet = new Set([
-      ...partialMatchParticipants,
-      ...exactMatchParticipants,
-    ]);
-    const allParticipants = [...allParticipantsSet];
-    allParticipants.sort((a, b) => a.contestGlobalRank - b.contestGlobalRank);
-
-    const winnersData = allParticipants.map((participant) => ({
-      user_id: participant.user_id._id,
-      username: participant.user_id.username,
-      branch: participant.user_id.branch,
-      libId: participant.user_id.libId,
-      section: participant.user_id.section,
-      rollNo: participant.user_id.rollNo,
-      userImage: participant.user_id.userImage,
-      yearOfStudy: participant.user_id.yearOfStudy,
-      codechefId: participant.user_id.codechefId,
-      contestName: participant.contestName,
-      contestGlobalRank: participant.contestGlobalRank,
-      contestRatingDiff: participant.contestRatingDiff,
-      stars: participant.stars,
+    const winnersData = participants.map(p => ({
+      user_id: p.user_id._id,
+      username: p.user_id.username,
+      branch: p.user_id.branch,
+      libId: p.user_id.libId,
+      section: p.user_id.section,
+      rollNo: p.user_id.rollNo,
+      userImage: p.user_id.userImage,
+      yearOfStudy: p.user_id.yearOfStudy,
+      codechefId: p.user_id.codechefId,
+      contestName: p.contestName,
+      contestGlobalRank: p.contestGlobalRank,
+      contestRatingDiff: p.contestRatingDiff,
+      stars: p.stars,
     }));
 
-    const existingContest = await codechefWinnersModel.findOne({
-      contestName: searchQuery,
-    });
+    let winnersDoc = await codechefWinnersModel.findOne({ contestName: searchQuery });
 
-    if (existingContest) {
-      existingContest.winners.push(...winnersData);
-      console.log(existingContest.winners);
-      await existingContest.save();
+    if (winnersDoc) {
+      winnersDoc.winners.push(...winnersData);
+      winnersDoc = await winnersDoc.save();
     } else {
-      // Create a new CodechefWinners document
-      await codechefWinnersModel.create({
+      winnersDoc = await codechefWinnersModel.create({
         contestName: searchQuery,
         winners: winnersData,
       });
     }
 
+    // Archive & delete original winners
+    await archiveAndDeleteContest(winnersDoc._id);
+
     res.status(200).json({ success: true, data: winnersData });
   } catch (error) {
-    console.error("Error retrieving contest participants:", error);
+    console.error("Error generating winners:", error);
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
@@ -400,7 +384,7 @@ const getContestsAllWinners = async (req, res) => {
 
   try {
     const contestName = req.params.contestName;
-    const contestWinners = await codechefWinnersModel.findOne({
+    const contestWinners = await codechefWinnersArchiveModel.findOne({
       contestName: new RegExp(contestName, "i"),
     });
 
@@ -427,7 +411,7 @@ const getAllWinners = async (req, res) => {
   }
 
   try {
-    const contestWinners = await codechefWinnersModel.find();
+    const contestWinners = await codechefWinnersArchiveModel.find();
 
     if (!contestWinners) {
       res.status(404);
