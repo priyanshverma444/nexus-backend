@@ -20,7 +20,8 @@ const codechefAxios = axios.create({
     'Accept-Language': 'en-US,en;q=0.9',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
   },
-  timeout: 10000
+  timeout: 10000,
+  validateStatus: (status) => status == 404 || (status >= 200 && status < 300)
 });
 
 // Retry wrapper for axios requests
@@ -51,6 +52,12 @@ const getCodechefProfile = async (req, res) => {
     }
 
     const response = await retryRequest(`/users/${req.params.id}`);
+
+    if (response.status === 404) {
+      return res
+        .status(404)
+        .json({ success: false, error: "CodeChef profile not found" });
+    }
 
     // Parse HTML
     const dom = new JSDOM(response.data);
@@ -261,49 +268,48 @@ const updateAllCodechefProfiles = async (req, res) => {
   }
 
   try {
-    const headers = {
-      Authorization: apiKey,
-    };
-    const userData = await User.find({
-      codechefId: { $exists: true },
-    });
+    const headers = { Authorization: apiKey };
+    const userData = await User.find({ codechefId: { $exists: true } });
 
     for (const user of userData) {
       const codechef = await Codechef.findOne({ user_id: user._id });
 
+      // Skip deleted or missing users instead of throwing
       if (!codechef) {
-        res.status(404);
-        throw new Error("User not found");
+        console.warn(`Skipping deleted/missing user: ${user.username}`);
+        continue;
       }
 
-      const response = await axios.get(
-        `${backendUrl}/api/contests/codechef/` + user.codechefId,
-        { headers }
-      );
-      const responseData = response.data;
+      try {
+        const response = await axios.get(`${backendUrl}/api/contests/codechef/${user.codechefId}`, { headers });
+        const responseData = response.data;
 
-      let stars = 1;
+        let stars = 1;
+        if (responseData.stars && responseData.stars.match(/\d+/)) {
+          stars = parseInt(responseData.stars.match(/\d+/)[0], 10);
+        }
 
-      if (responseData.stars && responseData.stars.match(/\d+/)) {
-        stars = parseInt(responseData.stars.match(/\d+/)[0], 10);
+        codechef.set({
+          currentRating: responseData.currentRating,
+          highestRating: responseData.highestRating,
+          globalRank: responseData.globalRank,
+          countryRank: responseData.countryRank,
+          stars: stars,
+          contestGlobalRank: responseData.contestGlobalRank,
+          contestRatingDiff: responseData.contestRatingDiff,
+          contestName: responseData.contestName,
+          profile: responseData.profile,
+          isEnrolled: false,
+        });
+
+        await codechef.save();
+        console.log(`stored ${user.username}`);
+      } catch (err) {
+        console.error(`Error updating profile for ${user.username}:`, err);
+        continue; // skip errors for individual users
       }
-
-      codechef.set({
-        currentRating: responseData.currentRating,
-        highestRating: responseData.highestRating,
-        globalRank: responseData.globalRank,
-        countryRank: responseData.countryRank,
-        stars: stars,
-        contestGlobalRank: responseData.contestGlobalRank,
-        contestRatingDiff: responseData.contestRatingDiff,
-        contestName: responseData.contestName,
-        profile: responseData.profile,
-        isEnrolled: false,
-      });
-
-      await codechef.save();
-      console.log(`stored ${user.username}`);
     }
+
     res.status(200).json({ success: true });
   } catch (error) {
     console.error(error);
